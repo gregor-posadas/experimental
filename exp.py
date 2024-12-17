@@ -18,7 +18,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import DrawingArea, TextArea, HPacker, VPacker, AnnotationBbox
 import seaborn as sns
 import matplotlib
-from datetime import datetime, date  # Added for date conversions
+from datetime import datetime, date
 
 # Prevent matplotlib from trying to use any Xwindows backend.
 matplotlib.use('Agg')
@@ -87,7 +87,8 @@ def combine_dataframes(dataframes_sorted, process_labels_sorted):
                 how='inner',
                 suffixes=('', f"_{process_labels_sorted[idx]}")
             )
-    combined_df.set_index('date', inplace=True)
+    if combined_df is not None:
+        combined_df.set_index('date', inplace=True)
     return combined_df
 
 def bootstrap_correlations(df, n_iterations=500, method='pearson', progress_bar=None, status_text=None, start_progress=0.0, end_progress=1.0):
@@ -590,56 +591,62 @@ def correlation_over_time_section(combined_df, common_params):
         st.markdown("</div>", unsafe_allow_html=True)
         return
     
-    # Select rolling window size
-    st.subheader("Configure Rolling Window")
-    rolling_window = st.slider(
-        "Select Rolling Window Size (days):",
-        min_value=7,
-        max_value=90,
-        value=30,
-        step=7,
-        help="Number of days to include in each rolling window for correlation calculation."
-    )
+    # Automatically split data into months
+    combined_df = combined_df.reset_index()  # Ensure 'date' is a column
+    combined_df['month'] = combined_df['date'].dt.to_period('M')
+    months = combined_df['month'].dropna().unique()
+    months_sorted = sorted(months)
     
-    # Initialize Plotly figure
-    fig = go.Figure()
+    # Initialize Plotly figure with subplots
+    from plotly.subplots import make_subplots
+    num_months = len(months_sorted)
+    cols = 3  # Number of columns in the subplot grid
+    rows = (num_months // cols) + int(num_months % cols > 0)
     
-    for pair_label in selected_pairs:
-        param1, param2 = pair_label.split(" & ")
-        # Identify all columns related to param1 and param2
-        # Since parameters are suffixed with process labels, find all matching columns
-        param1_cols = [col for col in combined_df.columns if col.startswith(param1)]
-        param2_cols = [col for col in combined_df.columns if col.startswith(param2)]
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=[str(month) for month in months_sorted])
+
+    for idx, month in enumerate(months_sorted):
+        row = (idx // cols) + 1
+        col = (idx % cols) + 1
+        df_month = combined_df[combined_df['month'] == month]
         
-        if not param1_cols or not param2_cols:
-            st.warning(f"No matching columns found for pair: {pair_label}")
-            continue
-        
-        # Compute rolling correlations for all combinations and average them
-        correlations = []
-        for p1 in param1_cols:
-            for p2 in param2_cols:
-                if p1 != p2:
-                    rolling_corr = combined_df[p1].rolling(window=rolling_window).corr(combined_df[p2])
-                    correlations.append(rolling_corr)
-        
-        if correlations:
-            # Compute the mean rolling correlation across all combinations
-            mean_corr = pd.concat(correlations, axis=1).mean(axis=1)
-            fig.add_trace(
-                go.Scatter(
-                    x=mean_corr.index,
-                    y=mean_corr.values,
-                    mode='lines',
-                    name=pair_label
+        for pair_label in selected_pairs:
+            param1, param2 = pair_label.split(" & ")
+            # Identify all columns related to param1 and param2
+            param1_cols = [col for col in combined_df.columns if col.startswith(param1)]
+            param2_cols = [col for col in combined_df.columns if col.startswith(param2)]
+            
+            if not param1_cols or not param2_cols:
+                st.warning(f"No matching columns found for pair: {pair_label} in {month}")
+                continue
+            
+            # Compute rolling correlations for all combinations and average them
+            correlations = []
+            for p1 in param1_cols:
+                for p2 in param2_cols:
+                    if p1 != p2:
+                        rolling_corr = df_month[p1].rolling(window=30).corr(df_month[p2])
+                        correlations.append(rolling_corr)
+            
+            if correlations:
+                # Compute the mean rolling correlation across all combinations
+                mean_corr = pd.concat(correlations, axis=1).mean(axis=1)
+                fig.add_trace(
+                    go.Scatter(
+                        x=mean_corr.index,
+                        y=mean_corr.values,
+                        mode='lines',
+                        name=pair_label
+                    ),
+                    row=row,
+                    col=col
                 )
-            )
     
     fig.update_layout(
-        title=f"Rolling Correlations Over Time (Window Size: {rolling_window} days)",
-        xaxis_title="Date",
-        yaxis_title="Correlation Coefficient",
-        hovermode="x unified"
+        height=300 * rows,  # Adjust height based on number of rows
+        width=1000,  # Adjust width as needed
+        title_text="Monthly Correlations of Selected Parameter Pairs",
+        showlegend=False
     )
     
     st.plotly_chart(fig, use_container_width=True)
@@ -717,7 +724,7 @@ def generate_targeted_network_diagram_streamlit(process_labels, dataframes, prog
 
         # Check if combined_df is empty
         if combined_df.empty:
-            st.error("No data available after merging and cleaning. Please check your data and date range.")
+            st.error("No data available after merging and cleaning. Please check your data.")
             progress_bar.progress(int((0.95 * progress_increment) * 100))
             status_text.text("No data available for targeted network diagram.")
             return
@@ -939,15 +946,13 @@ def main():
     
     2. **Label Processes:** Assign descriptive labels to each uploaded process file.
     
-    3. **Select Date Range:** Choose the specific date range you want to analyze.
+    3. **Reorder Processes:** After uploading, assign an order to the processes based on their real-life sequence (upstream to downstream).
     
-    4. **Reorder Processes:** After uploading, assign an order to the processes based on their real-life sequence (upstream to downstream).
+    4. **Generate Visualizations:** Click the buttons to generate correlation heatmaps, network diagrams, bar charts, and line graphs.
     
-    5. **Generate Visualizations:** Click the buttons to generate correlation heatmaps, network diagrams, bar charts, and line graphs.
+    5. **Correlation Over Time:** Analyze how correlations between parameter pairs evolve over time using monthly subplots.
     
-    6. **Correlation Over Time:** Analyze how correlations between parameter pairs evolve over the selected date range.
-    
-    7. **Targeted Network Diagram:** Use the section below to generate a network diagram centered around a specific parameter from a selected process.
+    6. **Targeted Network Diagram:** Use the section below to generate a network diagram centered around a specific parameter from a selected process.
     
     
     """, unsafe_allow_html=True)
@@ -1070,88 +1075,104 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 4. Select Date Range
+        # 4. Correlation Over Time Visualization with Monthly Subplots
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
-        st.markdown("<div class='section-title'>Select Date Range</div>", unsafe_allow_html=True)
-
-        # Combine all dates from the sorted dataframes
-        all_dates = pd.concat([df['date'] for df in dataframes_sorted])
-
-        # Check if all_dates is empty
-        if all_dates.empty:
-            st.error("No dates available in the uploaded files after filtering.")
-            st.stop()
-
-        # Determine the overall minimum and maximum dates
-        min_date = all_dates.min()
-        max_date = all_dates.max()
-
-        # Check if min_date or max_date is NaT
-        if pd.isna(min_date) or pd.isna(max_date):
-            st.error("No valid dates found in the uploaded data after filtering.")
-            st.stop()
-
-        # Convert min_date and max_date to datetime.date objects
-        min_date = min_date.date()
-        max_date = max_date.date()
-
-        # Display the date range picker
-        selected_dates = st.date_input(
-            "Select Date Range for Analysis",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            help="Choose the start and end dates for the analysis."
-        )
-
-        # Ensure that the user has selected a start and end date
-        if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
-            start_date, end_date = selected_dates
-        else:
-            st.error("Please select a valid start and end date.")
-            st.stop()
-
-        # Apply the date filter to each dataframe
-        dataframes_filtered = []
-        for idx, df in enumerate(dataframes_sorted):
-            filtered_df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
-            dataframes_filtered.append(filtered_df)
-            st.write(f"**{process_labels_sorted[idx]}**: {len(filtered_df)} records after filtering.")
-
-        # Check if any dataframe is empty after filtering
-        for idx, df in enumerate(dataframes_filtered):
-            if df.empty:
-                st.warning(f"The dataframe for process '{process_labels_sorted[idx]}' is empty after filtering.")
+        st.markdown("<div class='section-title'>Correlation Over Time</div>", unsafe_allow_html=True)
         
-        # Update the dataframes_sorted to the filtered dataframes
-        dataframes_sorted = dataframes_filtered
-
-        # Recompute common parameters after filtering
-        common_params = find_common_parameters(dataframes_sorted)
-        if not common_params:
-            st.error("No common parameters found after applying the date filter.")
-            st.stop()
-
-        st.success(f"Common parameters after date filtering: {', '.join(common_params)}")
-
-        # Combine all filtered dataframes for correlation over time
+        st.write("Analyze how correlations between parameter pairs evolve over time using monthly subplots.")
+        
+        # Select parameter pairs
+        st.subheader("Select Parameter Pairs")
+        # Generate all possible unique parameter pairs
+        parameter_pairs = list(itertools.combinations(common_params, 2))
+        pair_labels = [f"{pair[0]} & {pair[1]}" for pair in parameter_pairs]
+        
+        selected_pairs = st.multiselect(
+            "Choose parameter pairs to analyze:",
+            options=pair_labels,
+            help="Select one or more parameter pairs to visualize their correlation over time."
+        )
+        
+        if not selected_pairs:
+            st.info("Please select at least one parameter pair to display the correlation over time.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+        
+        # Automatically split data into months
         combined_df = combine_dataframes(dataframes_sorted, process_labels_sorted)
+        if combined_df is None or combined_df.empty:
+            st.error("No data available after merging the dataframes.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+        combined_df = combined_df.reset_index()  # Ensure 'date' is a column
+        combined_df['month'] = combined_df['date'].dt.to_period('M')
+        months = combined_df['month'].dropna().unique()
+        months_sorted = sorted(months)
+        
+        if len(months_sorted) == 0:
+            st.error("No valid months found in the data.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
 
-        # Check if combined_df is empty
-        if combined_df.empty:
-            st.error("No data available after merging the dataframes. Please adjust your date range or check your data.")
-            st.stop()
+        # Initialize Plotly figure with subplots
+        from plotly.subplots import make_subplots
+        num_months = len(months_sorted)
+        cols = 3  # Number of columns in the subplot grid
+        rows = (num_months // cols) + int(num_months % cols > 0)
+        
+        fig = make_subplots(rows=rows, cols=cols, subplot_titles=[str(month) for month in months_sorted])
 
+        for idx, month in enumerate(months_sorted):
+            row = (idx // cols) + 1
+            col = (idx % cols) + 1
+            df_month = combined_df[combined_df['month'] == month]
+            
+            for pair_label in selected_pairs:
+                param1, param2 = pair_label.split(" & ")
+                # Identify all columns related to param1 and param2
+                param1_cols = [col for col in combined_df.columns if col.startswith(param1)]
+                param2_cols = [col for col in combined_df.columns if col.startswith(param2)]
+                
+                if not param1_cols or not param2_cols:
+                    st.warning(f"No matching columns found for pair: {pair_label} in {month}")
+                    continue
+                
+                # Compute correlations for each combination
+                correlations = []
+                for p1 in param1_cols:
+                    for p2 in param2_cols:
+                        if p1 != p2:
+                            corr_value = df_month[p1].corr(df_month[p2], method='pearson')
+                            if not np.isnan(corr_value):
+                                correlations.append(corr_value)
+                
+                if correlations:
+                    # Compute the mean correlation across all combinations
+                    mean_corr = np.mean(correlations)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[str(month)],
+                            y=[mean_corr],
+                            mode='markers+lines',
+                            name=pair_label
+                        ),
+                        row=row,
+                        col=col
+                    )
+        
+        fig.update_layout(
+            height=300 * rows,  # Adjust height based on number of rows
+            width=1000,  # Adjust width as needed
+            title_text="Monthly Correlations of Selected Parameter Pairs",
+            showlegend=False
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 5. Correlation Over Time Visualization
-        # -------------------------------
-        correlation_over_time_section(combined_df, common_params)
-
-        # -------------------------------
-        # 6. Generate Heatmaps and Store Correlation Matrices
+        # 5. Generate Heatmaps and Store Correlation Matrices
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Generate Heatmaps</div>", unsafe_allow_html=True)
@@ -1210,7 +1231,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 7. Identify Globally Shared Parameters
+        # 6. Identify Globally Shared Parameters
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Globally Shared Parameters</div>", unsafe_allow_html=True)
@@ -1225,7 +1246,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 8. Generate Visualizations
+        # 7. Generate Visualizations
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Generate Visualizations</div>", unsafe_allow_html=True)
@@ -1298,7 +1319,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 9. Targeted Network Diagram Section with Separate Progress Bar
+        # 8. Targeted Network Diagram Section with Separate Progress Bar
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Targeted Network Diagram</div>", unsafe_allow_html=True)
