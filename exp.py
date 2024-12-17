@@ -4,6 +4,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objs as go
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
 from sklearn.utils import resample
@@ -49,7 +50,46 @@ def add_css():
 # Data Processing Functions
 # -------------------------------
 
+def remove_outliers_zscore(df, threshold=3):
+    """
+    Remove outliers from a dataframe based on Z-score.
+    """
+    z_scores = np.abs(stats.zscore(df.select_dtypes(include=[np.number])))
+    filtered_entries = (z_scores < threshold).all(axis=1)
+    return df[filtered_entries]
+
+def find_common_parameters(dataframes):
+    """
+    Identify common parameters across all dataframes, excluding the 'date' column.
+    """
+    common_params = set(dataframes[0].columns) - {'date'}
+    for df in dataframes[1:]:
+        common_params &= set(df.columns) - {'date'}
+    return list(common_params)
+
+def combine_dataframes(dataframes_sorted, process_labels_sorted):
+    """
+    Merge all filtered dataframes on the 'date' column with suffixes to differentiate processes.
+    """
+    combined_df = None
+    for idx, df in enumerate(dataframes_sorted):
+        if combined_df is None:
+            combined_df = df.copy()
+        else:
+            combined_df = pd.merge(
+                combined_df,
+                df,
+                on='date',
+                how='inner',
+                suffixes=('', f"_{process_labels_sorted[idx]}")
+            )
+    combined_df.set_index('date', inplace=True)
+    return combined_df
+
 def bootstrap_correlations(df, n_iterations=500, method='pearson', progress_bar=None, status_text=None, start_progress=0.0, end_progress=1.0):
+    """
+    Perform bootstrapping to compute median correlation matrices.
+    """
     correlations = []
     for i in range(n_iterations):
         df_resampled = resample(df)
@@ -63,134 +103,41 @@ def bootstrap_correlations(df, n_iterations=500, method='pearson', progress_bar=
     median_corr = pd.concat(correlations).groupby(level=0).median()
     return median_corr
 
-def calculate_p_values(df, method='pearson'):
-    p_values = pd.DataFrame(np.ones((df.shape[1], df.shape[1])), columns=df.columns, index=df.columns)
-    for col1, col2 in itertools.combinations(df.columns, 2):
-        try:
-            _, p_val = stats.pearsonr(df[col1], df[col2])
-            p_values.at[col1, col2] = p_val
-            p_values.at[col2, col1] = p_val
-        except Exception:
-            p_values.at[col1, col2] = 1
-            p_values.at[col2, col1] = 1
-    return p_values
-
-def correct_p_values(p_values):
-    _, corrected, _, _ = multipletests(p_values.values.flatten(), alpha=0.05, method='fdr_bh')
-    corrected_p = pd.DataFrame(corrected.reshape(p_values.shape), index=p_values.index, columns=p_values.columns)
-    return corrected_p
-
-def find_common_parameters(dataframes):
-    """
-    Identify parameters (columns) that are common across multiple DataFrames.
-    """
-    if not dataframes:
-        return []
-
-    # Start with all columns from the first DataFrame
-    common_columns = set(dataframes[0].columns)
-
-    # Intersect with columns from the remaining DataFrames
-    for df in dataframes[1:]:
-        common_columns &= set(df.columns)
-
-    # Exclude the 'date' column
-    common_columns.discard('date')
-
-    return list(common_columns)
-
-def remove_outliers_zscore(df, threshold=3):
-    """
-    Remove outliers from a DataFrame using the Z-score method.
-    """
-    st.write("Applying Z-Score Method to filter outliers...")
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    z_scores = np.abs(stats.zscore(df[numeric_cols], nan_policy="omit"))
-    mask = (z_scores < threshold).all(axis=1)
-    filtered_df = df[mask]
-    st.write(f"Outliers removed: {len(df) - len(filtered_df)}")
-    return filtered_df
-
-def validate_correlation_matrix(df, n_iterations=500, alpha=0.05, progress_bar=None, status_text=None, start_progress=0.0, end_progress=1.0):
-    st.write(f"DataFrame shape: {df.shape}")
-    st.write("Bootstrapping correlation matrices...")
-
-    # Ensure all columns are numeric
-    df = df.apply(pd.to_numeric, errors='coerce')
-    df = df.dropna(axis=1, how='all')  # Drop columns that are entirely non-numeric or NaN
-
-    # Bootstrap Pearson correlations
-    pearson_corr = bootstrap_correlations(
-        df, n_iterations=n_iterations, method='pearson',
-        progress_bar=progress_bar, status_text=status_text,
-        start_progress=start_progress, end_progress=start_progress + (end_progress - start_progress) / 3
-    )
-
-    # Bootstrap Spearman correlations
-    spearman_corr = bootstrap_correlations(
-        df, n_iterations=n_iterations, method='spearman',
-        progress_bar=progress_bar, status_text=status_text,
-        start_progress=start_progress + (end_progress - start_progress) / 3,
-        end_progress=start_progress + 2 * (end_progress - start_progress) / 3
-    )
-
-    # Bootstrap Kendall correlations
-    kendall_corr = bootstrap_correlations(
-        df, n_iterations=n_iterations, method='kendall',
-        progress_bar=progress_bar, status_text=status_text,
-        start_progress=start_progress + 2 * (end_progress - start_progress) / 3,
-        end_progress=end_progress
-    )
-
-    # Average the correlation matrices
-    avg_corr_matrix = (pearson_corr + spearman_corr + kendall_corr) / 3
-
-    st.write("Calculating and correcting p-values...")
-    p_values = calculate_p_values(df, method='pearson')
-    corrected_p_values = correct_p_values(p_values)
-
-    sig_mask = (corrected_p_values < alpha).astype(int)
-    filtered_corr_matrix = avg_corr_matrix.where(sig_mask > 0).fillna(0)
-
-    st.write("Correlation matrix validated and filtered based on significance.")
-    return filtered_corr_matrix
-
 # -------------------------------
 # Visualization Functions
 # -------------------------------
 
-def generate_heatmap(df, title, labels, progress_bar, status_text, start_progress, end_progress):
+def generate_heatmap(df, title, axis_titles, progress_bar=None, status_text=None, start_progress=0.0, end_progress=1.0):
     """
-    Generate a heatmap and return the filtered correlation matrix.
-    Update progress incrementally during processing.
+    Generate and display a correlation heatmap using Plotly.
     """
-    filtered_corr_matrix = validate_correlation_matrix(
-        df, 
-        progress_bar=progress_bar, 
-        status_text=status_text, 
-        start_progress=start_progress, 
-        end_progress=end_progress
-    )
-    parameter_order = sorted(filtered_corr_matrix.index)
-    filtered_corr_matrix = filtered_corr_matrix.loc[parameter_order, parameter_order]
-
-    np.fill_diagonal(filtered_corr_matrix.values, 1)
-
-    st.subheader(title)
+    # Compute correlation matrix
+    corr_matrix = df.corr(method='pearson')  # Using Pearson for heatmap
+    
+    # Create a mask for the upper triangle
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+    
+    # Update progress
+    if progress_bar and status_text:
+        progress = start_progress + 0.5 * (end_progress - start_progress)
+        progress_bar.progress(int(progress * 100))
+        status_text.text("Computing correlation matrix...")
+    
+    # Generate heatmap using Plotly
     fig = px.imshow(
-        filtered_corr_matrix,
-        text_auto=".2f",
-        color_continuous_scale="RdBu",
-        zmin=-1,
-        zmax=1,
-        labels={"x": labels[0], "y": labels[1], "color": "Correlation Coefficient"},
-        title=title,
+        corr_matrix,
+        text_auto=True,
+        aspect="auto",
+        color_continuous_scale='RdBu',
+        origin='lower',
+        labels=dict(x="Process 2 Parameters", y="Process 1 Parameters", color="Correlation"),
+        title=title
     )
-
+    
+    # Update layout
     fig.update_layout(
         title=dict(
             text=title,
-            font=dict(size=20),
             x=0.5,               # Center horizontally
             xanchor='center',    # Anchor the title at the center
             yanchor='top'        # Anchor the title at the top
@@ -202,9 +149,22 @@ def generate_heatmap(df, title, labels, progress_bar, status_text, start_progres
         height=600,
         margin=dict(l=100, r=100, t=100, b=100),
     )
-
+    
+    # Update progress
+    if progress_bar and status_text:
+        progress = start_progress + (0.5) * (end_progress - start_progress)
+        progress_bar.progress(int(progress * 100))
+        status_text.text("Rendering heatmap...")
+    
+    # Display the heatmap
     st.plotly_chart(fig)
-    return filtered_corr_matrix
+    
+    # Update progress to end
+    if progress_bar and status_text:
+        progress_bar.progress(int(end_progress * 100))
+        status_text.text("Heatmap generation complete.")
+    
+    return corr_matrix
 
 def generate_network_diagram_streamlit(labels, correlation_matrices, parameters, globally_shared=True, progress_bar=None, status_text=None, start_progress=0.0, end_progress=1.0):
     """
@@ -604,6 +564,88 @@ def plot_gspd_line_graph(process_labels, globally_shared_parameters, correlation
 
     st.pyplot(fig)
 
+def correlation_over_time_section(combined_df, common_params):
+    st.markdown("<div class='section'>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Correlation Over Time</div>", unsafe_allow_html=True)
+    
+    st.write("Analyze how correlations between parameter pairs evolve over the selected date range.")
+    
+    # Select parameter pairs
+    st.subheader("Select Parameter Pairs")
+    # Generate all possible unique parameter pairs
+    parameter_pairs = list(itertools.combinations(common_params, 2))
+    pair_labels = [f"{pair[0]} & {pair[1]}" for pair in parameter_pairs]
+    
+    selected_pairs = st.multiselect(
+        "Choose parameter pairs to analyze:",
+        options=pair_labels,
+        help="Select one or more parameter pairs to visualize their correlation over time."
+    )
+    
+    if not selected_pairs:
+        st.info("Please select at least one parameter pair to display the correlation over time.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    
+    # Select rolling window size
+    st.subheader("Configure Rolling Window")
+    rolling_window = st.slider(
+        "Select Rolling Window Size (days):",
+        min_value=7,
+        max_value=90,
+        value=30,
+        step=7,
+        help="Number of days to include in each rolling window for correlation calculation."
+    )
+    
+    # Initialize Plotly figure
+    fig = go.Figure()
+    
+    for pair_label in selected_pairs:
+        param1, param2 = pair_label.split(" & ")
+        # Identify all columns related to param1 and param2
+        # Since parameters are suffixed with process labels, find all matching columns
+        param1_cols = [col for col in combined_df.columns if col.startswith(param1)]
+        param2_cols = [col for col in combined_df.columns if col.startswith(param2)]
+        
+        if not param1_cols or not param2_cols:
+            st.warning(f"No matching columns found for pair: {pair_label}")
+            continue
+        
+        # Compute rolling correlations for all combinations and average them
+        correlations = []
+        for p1 in param1_cols:
+            for p2 in param2_cols:
+                if p1 != p2:
+                    rolling_corr = combined_df[p1].rolling(window=rolling_window).corr(combined_df[p2])
+                    correlations.append(rolling_corr)
+        
+        if correlations:
+            # Compute the mean rolling correlation across all combinations
+            mean_corr = pd.concat(correlations, axis=1).mean(axis=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=mean_corr.index,
+                    y=mean_corr.values,
+                    mode='lines',
+                    name=pair_label
+                )
+            )
+    
+    fig.update_layout(
+        title=f"Rolling Correlations Over Time (Window Size: {rolling_window} days)",
+        xaxis_title="Date",
+        yaxis_title="Correlation Coefficient",
+        hovermode="x unified"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# -------------------------------
+# Targeted Network Diagram Function
+# -------------------------------
+
 def generate_targeted_network_diagram_streamlit(process_labels, dataframes, progress_bar, status_text, progress_increment, n_iterations=500, alpha=0.05):
     """
     Generate a targeted network diagram centered around a selected parameter from a selected process.
@@ -805,6 +847,7 @@ def generate_targeted_network_diagram_streamlit(process_labels, dataframes, prog
         node_colors = [process_color_mapping[G.nodes[node]['process']] for node in G.nodes]
 
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=3000, ax=ax)
+
         labels = {node: f"{G.nodes[node]['label']}\n({G.nodes[node]['process']})" for node in G.nodes}
         nx.draw_networkx_labels(G, pos, labels=labels, font_size=10, ax=ax)
 
@@ -873,6 +916,88 @@ def generate_targeted_network_diagram_streamlit(process_labels, dataframes, prog
             st.error(f"Error updating progress bar: {e}")
 
 # -------------------------------
+# Correlation Over Time Visualization
+# -------------------------------
+
+def correlation_over_time_section(combined_df, common_params):
+    st.markdown("<div class='section'>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Correlation Over Time</div>", unsafe_allow_html=True)
+    
+    st.write("Analyze how correlations between parameter pairs evolve over the selected date range.")
+    
+    # Select parameter pairs
+    st.subheader("Select Parameter Pairs")
+    # Generate all possible unique parameter pairs
+    parameter_pairs = list(itertools.combinations(common_params, 2))
+    pair_labels = [f"{pair[0]} & {pair[1]}" for pair in parameter_pairs]
+    
+    selected_pairs = st.multiselect(
+        "Choose parameter pairs to analyze:",
+        options=pair_labels,
+        help="Select one or more parameter pairs to visualize their correlation over time."
+    )
+    
+    if not selected_pairs:
+        st.info("Please select at least one parameter pair to display the correlation over time.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    
+    # Select rolling window size
+    st.subheader("Configure Rolling Window")
+    rolling_window = st.slider(
+        "Select Rolling Window Size (days):",
+        min_value=7,
+        max_value=90,
+        value=30,
+        step=7,
+        help="Number of days to include in each rolling window for correlation calculation."
+    )
+    
+    # Initialize Plotly figure
+    fig = go.Figure()
+    
+    for pair_label in selected_pairs:
+        param1, param2 = pair_label.split(" & ")
+        # Identify all columns related to param1 and param2
+        # Since parameters are suffixed with process labels, find all matching columns
+        param1_cols = [col for col in combined_df.columns if col.startswith(param1)]
+        param2_cols = [col for col in combined_df.columns if col.startswith(param2)]
+        
+        if not param1_cols or not param2_cols:
+            st.warning(f"No matching columns found for pair: {pair_label}")
+            continue
+        
+        # Compute rolling correlations for all combinations and average them
+        correlations = []
+        for p1 in param1_cols:
+            for p2 in param2_cols:
+                if p1 != p2:
+                    rolling_corr = combined_df[p1].rolling(window=rolling_window).corr(combined_df[p2])
+                    correlations.append(rolling_corr)
+        
+        if correlations:
+            # Compute the mean rolling correlation across all combinations
+            mean_corr = pd.concat(correlations, axis=1).mean(axis=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=mean_corr.index,
+                    y=mean_corr.values,
+                    mode='lines',
+                    name=pair_label
+                )
+            )
+    
+    fig.update_layout(
+        title=f"Rolling Correlations Over Time (Window Size: {rolling_window} days)",
+        xaxis_title="Date",
+        yaxis_title="Correlation Coefficient",
+        hovermode="x unified"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# -------------------------------
 # Main Streamlit App
 # -------------------------------
 
@@ -902,7 +1027,9 @@ def main():
     
     5. **Generate Visualizations:** Click the buttons to generate correlation heatmaps, network diagrams, bar charts, and line graphs.
     
-    6. **Targeted Network Diagram:** Use the section below to generate a network diagram centered around a specific parameter from a selected process.
+    6. **Correlation Over Time:** Analyze how correlations between parameter pairs evolve over the selected date range.
+    
+    7. **Targeted Network Diagram:** Use the section below to generate a network diagram centered around a specific parameter from a selected process.
     
     
     """, unsafe_allow_html=True)
@@ -1054,10 +1181,19 @@ def main():
             st.stop()
 
         st.success(f"Common parameters after date filtering: {', '.join(common_params)}")
+
+        # Combine all filtered dataframes for correlation over time
+        combined_df = combine_dataframes(dataframes_sorted, process_labels_sorted)
+
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 5. Generate Heatmaps and Store Correlation Matrices
+        # 5. Correlation Over Time Visualization
+        # -------------------------------
+        correlation_over_time_section(combined_df, common_params)
+
+        # -------------------------------
+        # 6. Generate Heatmaps and Store Correlation Matrices
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Generate Heatmaps</div>", unsafe_allow_html=True)
@@ -1109,7 +1245,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 6. Identify Globally Shared Parameters
+        # 7. Identify Globally Shared Parameters
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Globally Shared Parameters</div>", unsafe_allow_html=True)
@@ -1124,7 +1260,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 7. Generate Network Diagrams and Charts with Separate Progress Bars
+        # 8. Generate Network Diagrams and Charts with Separate Progress Bars
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Generate Visualizations</div>", unsafe_allow_html=True)
@@ -1197,7 +1333,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 8. Targeted Network Diagram Section with Separate Progress Bar
+        # 9. Targeted Network Diagram Section with Separate Progress Bar
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Targeted Network Diagram</div>", unsafe_allow_html=True)
