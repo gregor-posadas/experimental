@@ -1049,7 +1049,23 @@ def main():
 
             # Unzip sorted files and labels
             uploaded_files_sorted, process_labels_sorted, _ = zip(*sorted_files)
-            dataframes_sorted = [df for _, _, df in sorted(zip(uploaded_files, process_labels, dataframes), key=lambda x: order_numbers[uploaded_files.index(x[0])])]
+
+            # Correctly sort dataframes_sorted based on sorted_files
+            dataframes_sorted = [df for _, _, df in sorted_files]
+
+            # Debugging: Display number of records and date ranges after sorting
+            st.markdown("<div class='section'>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Data Overview After Sorting</div>", unsafe_allow_html=True)
+
+            for idx, df in enumerate(dataframes_sorted):
+                st.write(f"**{process_labels_sorted[idx]}**:")
+                st.write(f"Number of records: {len(df)}")
+                if not df.empty:
+                    st.write(f"Date Range: {df['date'].min()} to {df['date'].max()}")
+                else:
+                    st.write("No data available.")
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
