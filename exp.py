@@ -18,6 +18,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import DrawingArea, TextArea, HPacker, VPacker, AnnotationBbox
 import seaborn as sns
 import matplotlib
+from datetime import datetime, date  # Added for date conversions
 
 # Prevent matplotlib from trying to use any Xwindows backend.
 matplotlib.use('Agg')
@@ -113,16 +114,16 @@ def generate_heatmap(df, title, axis_titles, progress_bar=None, status_text=None
     """
     # Compute correlation matrix
     corr_matrix = df.corr(method='pearson')  # Using Pearson for heatmap
-    
+
     # Create a mask for the upper triangle
     mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
-    
+
     # Update progress
     if progress_bar and status_text:
         progress = start_progress + 0.5 * (end_progress - start_progress)
         progress_bar.progress(int(progress * 100))
         status_text.text("Computing correlation matrix...")
-    
+
     # Generate heatmap using Plotly
     fig = px.imshow(
         corr_matrix,
@@ -133,7 +134,7 @@ def generate_heatmap(df, title, axis_titles, progress_bar=None, status_text=None
         labels=dict(x="Process 2 Parameters", y="Process 1 Parameters", color="Correlation"),
         title=title
     )
-    
+
     # Update layout
     fig.update_layout(
         title=dict(
@@ -149,21 +150,21 @@ def generate_heatmap(df, title, axis_titles, progress_bar=None, status_text=None
         height=600,
         margin=dict(l=100, r=100, t=100, b=100),
     )
-    
+
     # Update progress
     if progress_bar and status_text:
         progress = start_progress + (0.5) * (end_progress - start_progress)
         progress_bar.progress(int(progress * 100))
         status_text.text("Rendering heatmap...")
-    
+
     # Display the heatmap
     st.plotly_chart(fig)
-    
+
     # Update progress to end
     if progress_bar and status_text:
         progress_bar.progress(int(end_progress * 100))
         status_text.text("Heatmap generation complete.")
-    
+
     return corr_matrix
 
 def generate_network_diagram_streamlit(labels, correlation_matrices, parameters, globally_shared=True, progress_bar=None, status_text=None, start_progress=0.0, end_progress=1.0):
@@ -317,8 +318,7 @@ def generate_network_diagram_streamlit(labels, correlation_matrices, parameters,
     ax_network.set_title(f"{diagram_type} Parameter-Based Network Diagram", fontsize=16, pad=20, weight="bold")
 
     # Create consolidated edge summary text box
-    section_boxes = []
-
+    edge_summaries = []
     for summary in edge_summaries:
         node1, node2 = summary['nodes']
         process_pair_title = f"{node1} → {node2}"
@@ -336,10 +336,10 @@ def generate_network_diagram_streamlit(labels, correlation_matrices, parameters,
             content_boxes.append(hbox)
         # Pack the title and parameters vertically
         section_box = VPacker(children=[title_area] + content_boxes, align="left", pad=0, sep=2)
-        section_boxes.append(section_box)
+        edge_summaries.append(section_box)
 
     # Pack all sections into one box with spacing
-    all_sections_box = VPacker(children=section_boxes, align="left", pad=0, sep=10)
+    all_sections_box = VPacker(children=edge_summaries, align="left", pad=0, sep=10)
 
     # Diagram Interpretation
     interpretation_text = (
@@ -825,18 +825,6 @@ def generate_targeted_network_diagram_streamlit(process_labels, dataframes, prog
         # Draw the network diagram
         pos = nx.spring_layout(G, seed=42)
 
-        # Adjust node positions to separate internal and external correlations
-        internal_nodes = [node for node in G.nodes if G.nodes[node]['process'] == selected_process_label and node != target_param_full]
-        external_nodes = [node for node in G.nodes if G.nodes[node]['process'] != selected_process_label]
-        target_pos = pos[target_param_full]
-        # Adjust positions
-        for node in internal_nodes:
-            pos[node][0] -= 0.5  # Move to the left
-        for node in external_nodes:
-            pos[node][0] += 0.5  # Move to the right
-
-        fig, ax = plt.subplots(figsize=(14, 10))
-
         # Node colors based on process
         processes = list(set(nx.get_node_attributes(G, 'process').values()))
         color_map = {process: idx for idx, process in enumerate(processes)}
@@ -845,6 +833,8 @@ def generate_targeted_network_diagram_streamlit(process_labels, dataframes, prog
         colors = [cmap(i / num_colors) for i in range(num_colors)]
         process_color_mapping = {process: colors[idx] for idx, process in enumerate(processes)}
         node_colors = [process_color_mapping[G.nodes[node]['process']] for node in G.nodes]
+
+        fig, ax = plt.subplots(figsize=(14, 10))
 
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=3000, ax=ax)
 
@@ -914,88 +904,6 @@ def generate_targeted_network_diagram_streamlit(process_labels, dataframes, prog
             status_text.text("Targeted Network Diagram generated.")
         except Exception as e:
             st.error(f"Error updating progress bar: {e}")
-
-# -------------------------------
-# Correlation Over Time Visualization
-# -------------------------------
-
-def correlation_over_time_section(combined_df, common_params):
-    st.markdown("<div class='section'>", unsafe_allow_html=True)
-    st.markdown("<div class='section-title'>Correlation Over Time</div>", unsafe_allow_html=True)
-    
-    st.write("Analyze how correlations between parameter pairs evolve over the selected date range.")
-    
-    # Select parameter pairs
-    st.subheader("Select Parameter Pairs")
-    # Generate all possible unique parameter pairs
-    parameter_pairs = list(itertools.combinations(common_params, 2))
-    pair_labels = [f"{pair[0]} & {pair[1]}" for pair in parameter_pairs]
-    
-    selected_pairs = st.multiselect(
-        "Choose parameter pairs to analyze:",
-        options=pair_labels,
-        help="Select one or more parameter pairs to visualize their correlation over time."
-    )
-    
-    if not selected_pairs:
-        st.info("Please select at least one parameter pair to display the correlation over time.")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
-    
-    # Select rolling window size
-    st.subheader("Configure Rolling Window")
-    rolling_window = st.slider(
-        "Select Rolling Window Size (days):",
-        min_value=7,
-        max_value=90,
-        value=30,
-        step=7,
-        help="Number of days to include in each rolling window for correlation calculation."
-    )
-    
-    # Initialize Plotly figure
-    fig = go.Figure()
-    
-    for pair_label in selected_pairs:
-        param1, param2 = pair_label.split(" & ")
-        # Identify all columns related to param1 and param2
-        # Since parameters are suffixed with process labels, find all matching columns
-        param1_cols = [col for col in combined_df.columns if col.startswith(param1)]
-        param2_cols = [col for col in combined_df.columns if col.startswith(param2)]
-        
-        if not param1_cols or not param2_cols:
-            st.warning(f"No matching columns found for pair: {pair_label}")
-            continue
-        
-        # Compute rolling correlations for all combinations and average them
-        correlations = []
-        for p1 in param1_cols:
-            for p2 in param2_cols:
-                if p1 != p2:
-                    rolling_corr = combined_df[p1].rolling(window=rolling_window).corr(combined_df[p2])
-                    correlations.append(rolling_corr)
-        
-        if correlations:
-            # Compute the mean rolling correlation across all combinations
-            mean_corr = pd.concat(correlations, axis=1).mean(axis=1)
-            fig.add_trace(
-                go.Scatter(
-                    x=mean_corr.index,
-                    y=mean_corr.values,
-                    mode='lines',
-                    name=pair_label
-                )
-            )
-    
-    fig.update_layout(
-        title=f"Rolling Correlations Over Time (Window Size: {rolling_window} days)",
-        xaxis_title="Date",
-        yaxis_title="Correlation Coefficient",
-        hovermode="x unified"
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
 # -------------------------------
 # Main Streamlit App
@@ -1148,6 +1056,10 @@ def main():
         min_date = all_dates.min()
         max_date = all_dates.max()
 
+        # Convert min_date and max_date to datetime.date objects
+        min_date = min_date.date()
+        max_date = max_date.date()
+
         # Display the date range picker
         selected_dates = st.date_input(
             "Select Date Range for Analysis",
@@ -1260,7 +1172,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------
-        # 8. Generate Network Diagrams and Charts with Separate Progress Bars
+        # 8. Generate Visualizations
         # -------------------------------
         st.markdown("<div class='section'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Generate Visualizations</div>", unsafe_allow_html=True)
