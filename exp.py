@@ -55,7 +55,10 @@ def remove_outliers_zscore(df, threshold=3):
     """
     Remove outliers from a dataframe based on Z-score.
     """
-    z_scores = np.abs(stats.zscore(df.select_dtypes(include=[np.number])))
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) == 0:
+        return df  # No numeric columns to process
+    z_scores = np.abs(stats.zscore(df[numeric_cols]))
     filtered_entries = (z_scores < threshold).all(axis=1)
     return df[filtered_entries]
 
@@ -506,7 +509,7 @@ def plot_gspd_line_graph(process_labels, globally_shared_parameters, correlation
             progress_bar.progress(int(progress * 100))
             status_text.text(f"Generating Line Graph... ({step}/{total_steps})")
 
-    # Use the same y-limits as the bar chart
+    # Compute y-limits for consistent axes
     all_correlations = [corr for correlations in data.values() for corr in correlations]
     ymin = min(all_correlations + [0])
     ymax = max(all_correlations + [0])
@@ -711,6 +714,13 @@ def generate_targeted_network_diagram_streamlit(process_labels, dataframes, prog
         combined_df = combined_df.dropna()
         numeric_columns = combined_df.select_dtypes(include=[np.number]).columns
         combined_df = combined_df[numeric_columns]
+
+        # Check if combined_df is empty
+        if combined_df.empty:
+            st.error("No data available after merging and cleaning. Please check your data and date range.")
+            progress_bar.progress(int((0.95 * progress_increment) * 100))
+            status_text.text("No data available for targeted network diagram.")
+            return
 
         # Apply Z-score outlier removal
         combined_df = remove_outliers_zscore(combined_df, threshold=3)
@@ -1052,9 +1062,19 @@ def main():
         # Combine all dates from the sorted dataframes
         all_dates = pd.concat([df['date'] for df in dataframes_sorted])
 
+        # Check if all_dates is empty
+        if all_dates.empty:
+            st.error("No dates available in the uploaded files after filtering.")
+            st.stop()
+
         # Determine the overall minimum and maximum dates
         min_date = all_dates.min()
         max_date = all_dates.max()
+
+        # Check if min_date or max_date is NaT
+        if pd.isna(min_date) or pd.isna(max_date):
+            st.error("No valid dates found in the uploaded data after filtering.")
+            st.stop()
 
         # Convert min_date and max_date to datetime.date objects
         min_date = min_date.date()
@@ -1083,6 +1103,11 @@ def main():
             dataframes_filtered.append(filtered_df)
             st.write(f"**{process_labels_sorted[idx]}**: {len(filtered_df)} records after filtering.")
 
+        # Check if any dataframe is empty after filtering
+        for idx, df in enumerate(dataframes_filtered):
+            if df.empty:
+                st.warning(f"The dataframe for process '{process_labels_sorted[idx]}' is empty after filtering.")
+        
         # Update the dataframes_sorted to the filtered dataframes
         dataframes_sorted = dataframes_filtered
 
@@ -1096,6 +1121,11 @@ def main():
 
         # Combine all filtered dataframes for correlation over time
         combined_df = combine_dataframes(dataframes_sorted, process_labels_sorted)
+
+        # Check if combined_df is empty
+        if combined_df.empty:
+            st.error("No data available after merging the dataframes. Please adjust your date range or check your data.")
+            st.stop()
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1131,6 +1161,13 @@ def main():
             merged_df = merged_df.dropna()
             numeric_columns = merged_df.select_dtypes(include=[np.number]).columns
             merged_df = merged_df[numeric_columns]
+
+            # Check if merged_df is empty
+            if merged_df.empty:
+                st.warning(f"No data available for heatmap between '{process_labels_sorted[i]}' and '{process_labels_sorted[i + 1]}' after merging and cleaning.")
+                correlation_matrices.append(pd.DataFrame())
+                parameters_per_edge.append([])
+                continue
 
             # Generate heatmap
             filtered_corr_matrix = generate_heatmap(
