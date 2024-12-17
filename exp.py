@@ -940,8 +940,8 @@ def main():
     # 1. Instructions Section
     # -------------------------------
     st.markdown("<div class='section'>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Instructions</div>", unsafe_allow_html=True)
     st.markdown("""
-    <div class='section-title'>Instructions</div>
     1. **Upload Files:** Upload your CSV or Excel files containing process data. Ensure each file has a 'date' column.
     
     2. **Label Processes:** Assign descriptive labels to each uploaded process file.
@@ -953,8 +953,6 @@ def main():
     5. **Correlation Over Time:** Analyze how correlations between parameter pairs evolve over time using monthly subplots.
     
     6. **Targeted Network Diagram:** Use the section below to generate a network diagram centered around a specific parameter from a selected process.
-    
-    
     """, unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1064,7 +1062,10 @@ def main():
 
             for idx, df in enumerate(dataframes_sorted):
                 st.write(f"**{process_labels_sorted[idx]}**:")
-                st.write(f"Number of records: {len(df)}")
+                try:
+                    st.write(f"Number of records: {len(df)}")
+                except TypeError:
+                    st.write(f"Number of records: {df}")  # If df is incorrectly an int
                 if not df.empty:
                     st.write(f"Date Range: {df['date'].min()} to {df['date'].max()}")
                 else:
@@ -1160,7 +1161,7 @@ def main():
                         row=row,
                         col=col
                     )
-        
+    
         fig.update_layout(
             height=300 * rows,  # Adjust height based on number of rows
             width=1000,  # Adjust width as needed
